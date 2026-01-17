@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@mongodb-js/zstd": "^7.0.0",
     "clipboardy": "^5.0.2",
     "express": "^5.2.1",
     "node-fetch": "^3.3.2",
