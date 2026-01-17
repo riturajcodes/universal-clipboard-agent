@@ -1,7 +1,5 @@
 import { WebSocketServer } from 'ws';
 
-// Store rooms and their last clipboard state
-// Structure: { roomId: { clients: Set<ws>, lastClipboard: { content, type, timestamp } } }
 const rooms = {};
 
 export function setupWebSocket(server) {
@@ -29,14 +27,12 @@ export function setupWebSocket(server) {
           rooms[roomId].clients.add(ws);
           console.log(`User ${userId} joined room ${roomId}`);
 
-          // 1. Send existing peers to the new user
           const peers = Array.from(rooms[roomId].clients)
             .filter(client => client !== ws && client.readyState === 1)
             .map(client => ({ userId: client.userId, os: client.os }));
           
           ws.send(JSON.stringify({ type: 'existing-peers', peers }));
 
-          // 2. Send last clipboard item to the re-connecting user
           if (rooms[roomId].lastClipboard) {
             ws.send(JSON.stringify({
               type: 'clipboard',
@@ -44,26 +40,20 @@ export function setupWebSocket(server) {
             }));
           }
 
-          // 3. Notify others
           broadcastToRoom(roomId, { type: 'peer-joined', userId, os }, ws);
 
         } else if (data.type === 'clipboard') {
-          // Update server history
           if (currentRoom && rooms[currentRoom]) {
             rooms[currentRoom].lastClipboard = {
               content: data.content,
               type: data.clipboardType,
               timestamp: data.timestamp
             };
-            // Broadcast to all other clients in the room
             broadcastToRoom(currentRoom, data, ws);
           }
         } else if (data.type === 'signal') {
-          // Forward WebRTC signals to specific target or broadcast
-          // For simplicity in this setup, we broadcast to find the peer
           broadcastToRoom(currentRoom, data, ws);
         } else if (data.type === 'file-transfer') {
-          // Broadcast file chunks directly without saving to history
           broadcastToRoom(currentRoom, data, ws);
         }
       } catch (e) {

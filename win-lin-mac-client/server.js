@@ -14,21 +14,17 @@ const app = express();
 const PORT = 4000;
 app.use(express.json());
 
-// Fix __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const execAsync = promisify(exec);
-
-// Serve static UI files
 app.use(express.static(path.join(__dirname, 'ui')));
 
-// --- Local API for UI ---
 app.post('/api/join', (req, res) => {
     const { roomId } = req.body;
     if (roomId) {
         ROOM_ID = roomId;
-        connect(); // Reconnect with new room
+        connect();
         res.json({ success: true, roomId });
     } else {
         res.status(400).json({ error: 'Room ID required' });
@@ -49,8 +45,7 @@ server.listen(PORT, () => {
     console.log(`Client UI running at http://localhost:${PORT}`);
 });
 
-// --- WebSocket to central server ---
-const SERVER_URL = 'ws://localhost:3000'; // Change if deployed
+const SERVER_URL = 'ws://localhost:3000';
 let ROOM_ID = process.env.ROOM_ID || null;
 const USER_ID = `client-${Math.floor(Math.random() * 10000)}`;
 const OS = process.platform;
@@ -59,9 +54,8 @@ let ws;
 let lastClip = '';
 let peers = new Set();
 let history = [];
-const incomingTransfers = new Map(); // transferId -> { writeStream, fileName, senderId }
+const incomingTransfers = new Map();
 
-// --- Encryption Helpers ---
 const ALGORITHM = 'aes-256-gcm';
 const getKey = () => crypto.scryptSync(ROOM_ID || 'default-secret', 'salt', 32);
 
@@ -114,7 +108,6 @@ function connect() {
 
             switch (data.type) {
                 case MESSAGE_TYPES.CLIPBOARD:
-                    // Received clipboard data from server/peer
                     const decryptedContent = decrypt(data.content);
                     const decryptedFileName = data.fileName ? decrypt(data.fileName) : null;
 
@@ -150,8 +143,7 @@ function connect() {
 
                 case MESSAGE_TYPES.PEER_LEFT:
                     console.log('Peer left:', data.userId);
-                    // Simple removal based on partial match or rebuild logic needed for robust app
-                    // For now, we just re-sync or let the UI poll
+
                     break;
 
                 case MESSAGE_TYPES.EXISTING_PEERS:
@@ -166,7 +158,6 @@ function connect() {
                         const downloadDir = path.join(__dirname, 'downloads');
                         if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
                         
-                        // Handle duplicate names
                         const safeFileName = `${Date.now()}-${path.basename(fileName)}`;
                         const filePath = path.join(downloadDir, safeFileName);
                         
@@ -213,7 +204,6 @@ function connect() {
     });
 }
 
-// Start connection
 connect();
 
 function sendFile(filePath) {
@@ -224,7 +214,6 @@ function sendFile(filePath) {
         
         console.log(`Sending file: ${fileName} (${stats.size} bytes)`);
 
-        // 1. Send Start
         ws.send(JSON.stringify({
             type: MESSAGE_TYPES.FILE_TRANSFER,
             action: TRANSFER_ACTIONS.START,
@@ -233,7 +222,6 @@ function sendFile(filePath) {
             senderId: USER_ID
         }));
 
-        // 2. Stream Chunks
         const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 }); // 64KB chunks
         
         stream.on('data', (chunk) => {
@@ -264,7 +252,6 @@ function sendFile(filePath) {
     }
 }
 
-// --- Clipboard watcher ---
 setInterval(async () => {
     try {
         const text = await clipboardy.read();
@@ -277,26 +264,22 @@ setInterval(async () => {
             let fileName = null;
             let isFile = false;
 
-            // Check if text is a file path safely
+            
             try {
-                // Avoid checking fs for long strings or multiline text which are likely not paths
                 if (trimmedText.length < 1024 && !trimmedText.includes('\n')) {
                     if (fs.existsSync(trimmedText) && fs.lstatSync(trimmedText).isFile()) {
                         isFile = true;
                     }
                 }
             } catch (e) {
-                // Ignore fs errors (e.g. invalid characters in clipboard text)
             }
 
             if (isFile) {
                 type = CLIPBOARD_TYPES.FILE;
                 fileName = path.basename(trimmedText);
-                // Simple check for images based on extension
                 if (/\.(png|jpg|jpeg|gif|bmp)$/i.test(fileName)) {
                     type = CLIPBOARD_TYPES.IMAGE;
                 }
-                // Use chunked transfer for files
                 sendFile(trimmedText);
             } else {
                 broadcastClipboard(content, type, fileName);
@@ -312,12 +295,10 @@ setInterval(async () => {
         }
     } catch (err) {
         const msg = err.message || err.toString();
-        // On Wayland, wl-paste throws if content is not text (e.g. file)
         if (msg.includes('wl-paste') && msg.includes('not available')) {
             try {
-                // Try to read as file URI list (fallback for file transfer)
                 const { stdout } = await execAsync('wl-paste --type text/uri-list');
-                const uri = stdout.trim().split('\n')[0]; // Get first file
+                const uri = stdout.trim().split('\n')[0];
                 
                 if (uri && uri.startsWith('file://')) {
                     const filePath = fileURLToPath(uri);
@@ -339,7 +320,6 @@ setInterval(async () => {
                     }
                 }
             } catch (e) {
-                // Ignore if fallback also fails
             }
         } else {
             console.error('Clipboard watcher error:', err);

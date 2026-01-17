@@ -7,7 +7,6 @@ const loginScreen = document.getElementById('loginScreen');
 const dashboardScreen = document.getElementById('dashboardScreen');
 const currentRoomDisplay = document.getElementById('currentRoomDisplay');
 
-// 1. Create Room (Calls Central Server directly)
 createBtn.addEventListener('click', () => {
     fetch('http://localhost:3000/api/rooms/create', { method: 'POST' })
         .then(res => res.json())
@@ -17,12 +16,10 @@ createBtn.addEventListener('click', () => {
         .catch(err => alert('Failed to create room: ' + err));
 });
 
-// 2. Join Room (Calls Local Client to switch rooms)
 joinBtn.addEventListener('click', () => {
     const roomId = roomIdInput.value.trim();
     if (!roomId) return alert('Enter a room ID');
     
-    // Tell local server to join this room
     fetch(`/api/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -41,7 +38,6 @@ function showDashboard(roomId) {
     dashboardScreen.style.display = 'block';
     currentRoomDisplay.textContent = `Room: ${roomId}`;
     
-    // Start polling for status
     setInterval(pollStatus, 2000);
     pollStatus();
 }
@@ -53,7 +49,6 @@ function pollStatus() {
     fetch('/api/status')
         .then(res => res.json())
         .then(data => {
-            // Update devices list only if changed
             const currentPeersJson = JSON.stringify(data.peers);
             if (currentPeersJson !== lastPeersJson) {
                 devicesList.innerHTML = '';
@@ -63,7 +58,6 @@ function pollStatus() {
                 lastPeersJson = currentPeersJson;
             }
 
-            // Update clipboard history only if changed
             const currentHistoryJson = JSON.stringify(data.history);
             if (currentHistoryJson !== lastHistoryJson) {
                 clipboardHistory.innerHTML = '';
@@ -75,7 +69,6 @@ function pollStatus() {
         });
 }
 
-// Example: dynamically add devices / clipboard items
 function addDevice(deviceName, os) {
     const li = document.createElement('li');
     li.textContent = `${deviceName} (${os})`;
