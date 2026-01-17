@@ -21,6 +21,10 @@ app.use(express.json());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const makingOffer = {};
+const politePeer = {};
+
+
 const execAsync = promisify(exec);
 app.use(express.static(path.join(__dirname, 'ui')));
 
@@ -49,7 +53,8 @@ server.listen(PORT, () => {
     console.log(`Client UI running at http://localhost:${PORT}`);
 });
 
-const SERVER_URL = 'ws://localhost:3000';
+// const SERVER_URL = 'ws://localhost:3000';
+const SERVER_URL = 'wss://universal-clipboard-agent.onrender.com';
 let ROOM_ID = process.env.ROOM_ID || null;
 const USER_ID = `client-${Math.floor(Math.random() * 10000)}`;
 const OS = process.platform;
@@ -66,6 +71,8 @@ const iceConfig = {
         { urls: 'stun:stun.l.google.com:19302' }
     ]
 };
+
+const pendingClipboard = [];
 
 const ALGORITHM = 'aes-256-gcm';
 const getKey = () => crypto.scryptSync(ROOM_ID || 'default-secret', 'salt', 32);
@@ -94,23 +101,45 @@ function decrypt(encryptedWrapper) {
     }
 }
 
+
+function teardownPeers() {
+    Object.values(peerConnections).forEach(({ pc, dc, fileDc }) => {
+        try { dc?.close(); } catch {}
+        try { fileDc?.close(); } catch {}
+        try { pc?.close(); } catch {}
+    });
+
+    Object.keys(peerConnections).forEach(k => delete peerConnections[k]);
+    Object.keys(makingOffer).forEach(k => delete makingOffer[k]);
+    Object.keys(politePeer).forEach(k => delete politePeer[k]);
+
+    peers.clear();
+    pendingClipboard.length = 0;
+}
+
+
 function connect() {
     if (ws) {
-        ws.removeAllListeners();
-        ws.terminate();
+        try {
+            ws.removeAllListeners();
+            ws.close();
+        } catch {}
     }
+
+    // CRITICAL: destroy old WebRTC state
+    teardownPeers();
+
     ws = new WebSocket(SERVER_URL);
 
     ws.on('open', () => {
         console.log('Connected to central server');
+
         ws.send(JSON.stringify({
             type: MESSAGE_TYPES.JOIN,
             roomId: ROOM_ID || 'default',
             userId: USER_ID,
             os: OS
         }));
-        peers.clear();
-        history = [];
     });
 
     ws.on('message', async (msg) => {
@@ -118,26 +147,44 @@ function connect() {
             const data = JSON.parse(msg);
 
             switch (data.type) {
-                case MESSAGE_TYPES.PEER_JOINED:
+                case MESSAGE_TYPES.PEER_JOINED: {
                     console.log('Peer joined:', data.userId);
                     peers.add(`${data.userId} (${data.os || 'unknown'})`);
-                    break;
 
-                case MESSAGE_TYPES.PEER_LEFT:
-                    console.log('Peer left:', data.userId);
-                    if (peerConnections[data.userId]) {
-                        peerConnections[data.userId].pc.close();
-                        delete peerConnections[data.userId];
+                    if (USER_ID < data.userId) {
+                        initiatePeerConnection(data.userId);
                     }
-                    peers = new Set(Array.from(peers).filter(p => !p.startsWith(data.userId)));
                     break;
+                }
 
-                case MESSAGE_TYPES.EXISTING_PEERS:
+                case MESSAGE_TYPES.PEER_LEFT: {
+                    console.log('Peer left:', data.userId);
+
+                    const entry = peerConnections[data.userId];
+                    if (entry) {
+                        try { entry.pc.close(); } catch {}
+                        delete peerConnections[data.userId];
+                        delete makingOffer[data.userId];
+                        delete politePeer[data.userId];
+                    }
+
+                    peers = new Set(
+                        [...peers].filter(p => !p.startsWith(data.userId))
+                    );
+                    break;
+                }
+
+                case MESSAGE_TYPES.EXISTING_PEERS: {
                     data.peers.forEach(p => {
                         peers.add(`${p.userId} (${p.os})`);
-                        initiatePeerConnection(p.userId);
+
+                        if (USER_ID < p.userId) {
+                            initiatePeerConnection(p.userId);
+                        }
                     });
                     break;
+                }
+
                 case MESSAGE_TYPES.SIGNAL:
                     await handleSignal(data);
                     break;
@@ -148,7 +195,7 @@ function connect() {
     });
 
     ws.on('close', () => {
-        console.log('Disconnected. Reconnecting in 3s...');
+        console.log('Disconnected from server. Reconnecting in 3s...');
         setTimeout(connect, 3000);
     });
 
@@ -161,15 +208,21 @@ function connect() {
 connect();
 
 async function initiatePeerConnection(targetId) {
+    if (peerConnections[targetId]) return;
+
     const pc = new RTCPeerConnection(iceConfig);
+
+    // Deterministic role assignment
+    politePeer[targetId] = USER_ID < targetId;
+
     const dc = pc.createDataChannel("universal-clipboard");
     setupDataChannel(dc, targetId);
-    
+
     const fileDc = pc.createDataChannel("file-transfer");
     fileDc.binaryType = 'arraybuffer';
-    fileDc.bufferedAmountLowThreshold = 65536; // FIX: Set backpressure threshold
+    fileDc.bufferedAmountLowThreshold = 65536;
     setupFileChannel(fileDc, targetId);
-    
+
     peerConnections[targetId] = { pc, dc, fileDc };
 
     pc.onicecandidate = (event) => {
@@ -177,82 +230,131 @@ async function initiatePeerConnection(targetId) {
             ws.send(JSON.stringify({
                 type: MESSAGE_TYPES.SIGNAL,
                 target: targetId,
+                senderId: USER_ID,
                 signalType: 'candidate',
                 candidate: event.candidate
             }));
         }
     };
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify({
-        type: MESSAGE_TYPES.SIGNAL,
-        target: targetId,
-        signalType: 'offer',
-        sdp: pc.localDescription
-    }));
+    pc.onnegotiationneeded = async () => {
+        try {
+            makingOffer[targetId] = true;
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            ws.send(JSON.stringify({
+                type: MESSAGE_TYPES.SIGNAL,
+                target: targetId,
+                senderId: USER_ID,
+                signalType: 'offer',
+                sdp: pc.localDescription
+            }));
+        } catch (err) {
+            console.error('Negotiation error:', err);
+        } finally {
+            makingOffer[targetId] = false;
+        }
+    };
 }
+
 
 async function handleSignal(data) {
     const { senderId, signalType, sdp, candidate } = data;
-    
-    let pc;
-    if (peerConnections[senderId]) {
-        pc = peerConnections[senderId].pc;
-    } else {
-        if (signalType === 'offer') {
-            pc = new RTCPeerConnection(iceConfig);
-            peerConnections[senderId] = { pc, dc: null, fileDc: null };
-            
-            pc.onicecandidate = (event) => {
-                if (event.candidate) {
-                    ws.send(JSON.stringify({
-                        type: MESSAGE_TYPES.SIGNAL,
-                        target: senderId,
-                        signalType: 'candidate',
-                        candidate: event.candidate
-                    }));
-                }
-            };
 
-            pc.ondatachannel = (event) => {
-                const dc = event.channel;
-                if (dc.label === 'file-transfer') {
-                    dc.binaryType = 'arraybuffer';
-                    dc.bufferedAmountLowThreshold = 65536; // FIX: Set backpressure threshold
-                    peerConnections[senderId].fileDc = dc;
-                    setupFileChannel(dc, senderId);
-                } else {
-                    peerConnections[senderId].dc = dc;
-                    setupDataChannel(dc, senderId);
-                }
-            };
-        } else {
-            return;
-        }
+    if (senderId === USER_ID) return;
+
+    let entry = peerConnections[senderId];
+    if (!entry) {
+        const pc = new RTCPeerConnection(iceConfig);
+        peerConnections[senderId] = entry = { pc, dc: null, fileDc: null };
+        politePeer[senderId] = USER_ID < senderId;
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                ws.send(JSON.stringify({
+                    type: MESSAGE_TYPES.SIGNAL,
+                    target: senderId,
+                    senderId: USER_ID,
+                    signalType: 'candidate',
+                    candidate: event.candidate
+                }));
+            }
+        };
+
+        pc.ondatachannel = (event) => {
+            const dc = event.channel;
+            if (dc.label === 'file-transfer') {
+                dc.binaryType = 'arraybuffer';
+                dc.bufferedAmountLowThreshold = 65536;
+                entry.fileDc = dc;
+                setupFileChannel(dc, senderId);
+            } else {
+                entry.dc = dc;
+                setupDataChannel(dc, senderId);
+            }
+        };
     }
 
-    if (signalType === 'offer') {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        ws.send(JSON.stringify({
-            type: MESSAGE_TYPES.SIGNAL,
-            target: senderId,
-            signalType: 'answer',
-            sdp: pc.localDescription
-        }));
-    } else if (signalType === 'answer') {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    } else if (signalType === 'candidate') {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    const pc = entry.pc;
+
+    try {
+        if (signalType === 'offer') {
+            const offerCollision =
+                makingOffer[senderId] ||
+                pc.signalingState !== 'stable';
+
+            if (offerCollision && !politePeer[senderId]) {
+                console.log('Ignoring offer (impolite peer)', senderId);
+                return;
+            }
+
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            ws.send(JSON.stringify({
+                type: MESSAGE_TYPES.SIGNAL,
+                target: senderId,
+                senderId: USER_ID,
+                signalType: 'answer',
+                sdp: pc.localDescription
+            }));
+        }
+
+        if (signalType === 'answer') {
+            if (pc.signalingState === 'have-local-offer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            }
+        }
+
+        if (signalType === 'candidate') {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+    } catch (err) {
+        console.error('Signal handling error:', err);
     }
 }
 
+
 function setupDataChannel(dc, remoteUserId) {
-    dc.onopen = () => console.log(`Data channel open with ${remoteUserId}`);
+    dc.onopen = () => {
+        console.log(`Data channel open with ${remoteUserId}`);
+
+        // Flush queued clipboard messages
+        pendingClipboard.forEach(msg => {
+            try { dc.send(msg); } catch {}
+        });
+        pendingClipboard.length = 0;
+    };
+
     dc.onmessage = (event) => {
-        handleDataMessage(JSON.parse(event.data));
+        try {
+            const msg = JSON.parse(event.data);
+            handleDataMessage(msg);
+        } catch (err) {
+            console.error('Invalid data channel message:', err);
+        }
     };
 }
 
@@ -633,7 +735,30 @@ function broadcastClipboard(content, type, fileName = null) {
         senderId: USER_ID,
         timestamp: Date.now()
     });
+
+    let delivered = false;
+
     Object.values(peerConnections).forEach(({ dc }) => {
-        if (dc && dc.readyState === 'open') dc.send(msg);
+        if (dc && dc.readyState === 'open') {
+            dc.send(msg);
+            delivered = true;
+        }
     });
+
+    if (!delivered) {
+        pendingClipboard.push(msg);
+    }
 }
+
+setInterval(() => {
+    for (const [id, p] of Object.entries(peerConnections)) {
+        if (!p?.pc) continue;
+
+        console.log(
+            `[RTC] ${id}`,
+            'state:', p.pc.connectionState,
+            'dc:', p.dc?.readyState,
+            'fileDc:', p.fileDc?.readyState
+        );
+    }
+}, 5000);
