@@ -9,6 +9,8 @@ import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import {CLIPBOARD_TYPES, MESSAGE_TYPES, TRANSFER_ACTIONS} from './constants.js';
+import wrtc from 'wrtc';
+const { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate } = wrtc;
 
 const app = express();
 const PORT = 4000;
@@ -55,6 +57,12 @@ let lastClip = '';
 let peers = new Set();
 let history = [];
 const incomingTransfers = new Map();
+const peerConnections = {};
+const iceConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+    ]
+};
 
 const ALGORITHM = 'aes-256-gcm';
 const getKey = () => crypto.scryptSync(ROOM_ID || 'default-secret', 'salt', 32);
@@ -107,35 +115,6 @@ function connect() {
             const data = JSON.parse(msg);
 
             switch (data.type) {
-                case MESSAGE_TYPES.CLIPBOARD:
-                    const decryptedContent = decrypt(data.content);
-                    const decryptedFileName = data.fileName ? decrypt(data.fileName) : null;
-
-                    if (decryptedContent && decryptedContent !== lastClip) {
-                        console.log(`Received clipboard (${data.type}) from ${data.senderId}`);
-
-                        if (data.clipboardType === CLIPBOARD_TYPES.FILE || data.clipboardType === CLIPBOARD_TYPES.IMAGE) {
-                            const downloadDir = path.join(__dirname, 'downloads');
-                            if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
-                            const fileName = decryptedFileName || `file-${Date.now()}`;
-                            const filePath = path.join(downloadDir, fileName);
-                            fs.writeFileSync(filePath, Buffer.from(decryptedContent, 'base64'));
-                            console.log(`Saved ${data.clipboardType} to ${filePath}`);
-                        } else {
-                            lastClip = decryptedContent;
-                            await clipboardy.write(decryptedContent);
-                        }
-
-                        history.unshift({
-                            type: data.clipboardType || 'text',
-                            content: data.clipboardType === CLIPBOARD_TYPES.TEXT ? decryptedContent : `File: ${decryptedFileName}`,
-                            senderId: data.senderId,
-                            timestamp: Date.now()
-                        });
-                        if (history.length > 20) history.pop();
-                    }
-                    break;
-
                 case MESSAGE_TYPES.PEER_JOINED:
                     console.log('Peer joined:', data.userId);
                     peers.add(`${data.userId} (${data.os || 'unknown'})`);
@@ -143,49 +122,21 @@ function connect() {
 
                 case MESSAGE_TYPES.PEER_LEFT:
                     console.log('Peer left:', data.userId);
-
+                    if (peerConnections[data.userId]) {
+                        peerConnections[data.userId].pc.close();
+                        delete peerConnections[data.userId];
+                    }
+                    peers = new Set(Array.from(peers).filter(p => !p.startsWith(data.userId)));
                     break;
 
                 case MESSAGE_TYPES.EXISTING_PEERS:
-                    data.peers.forEach(p => peers.add(`${p.userId} (${p.os})`));
+                    data.peers.forEach(p => {
+                        peers.add(`${p.userId} (${p.os})`);
+                        initiatePeerConnection(p.userId);
+                    });
                     break;
-
-                case MESSAGE_TYPES.FILE_TRANSFER:
-                    const { action, transferId } = data;
-                    
-                    if (action === TRANSFER_ACTIONS.START) {
-                        const fileName = decrypt(data.fileName);
-                        const downloadDir = path.join(__dirname, 'downloads');
-                        if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
-                        
-                        const safeFileName = `${Date.now()}-${path.basename(fileName)}`;
-                        const filePath = path.join(downloadDir, safeFileName);
-                        
-                        const writeStream = fs.createWriteStream(filePath);
-                        incomingTransfers.set(transferId, { writeStream, fileName, senderId: data.senderId });
-                        console.log(`Starting download: ${fileName}`);
-                    } 
-                    else if (action === TRANSFER_ACTIONS.CHUNK) {
-                        const transfer = incomingTransfers.get(transferId);
-                        if (transfer) {
-                            const chunk = Buffer.from(decrypt(data.content), 'base64');
-                            transfer.writeStream.write(chunk);
-                        }
-                    }
-                    else if (action === TRANSFER_ACTIONS.END) {
-                        const transfer = incomingTransfers.get(transferId);
-                        if (transfer) {
-                            transfer.writeStream.end();
-                            console.log(`Finished download: ${transfer.fileName}`);
-                            history.unshift({
-                                type: CLIPBOARD_TYPES.FILE,
-                                content: `File received: ${transfer.fileName}`,
-                                senderId: transfer.senderId,
-                                timestamp: Date.now()
-                            });
-                            incomingTransfers.delete(transferId);
-                        }
-                    }
+                case MESSAGE_TYPES.SIGNAL:
+                    await handleSignal(data);
                     break;
             }
         } catch (err) {
@@ -206,6 +157,152 @@ function connect() {
 
 connect();
 
+async function initiatePeerConnection(targetId) {
+    const pc = new RTCPeerConnection(iceConfig);
+    const dc = pc.createDataChannel("universal-clipboard");
+    setupDataChannel(dc, targetId);
+    
+    peerConnections[targetId] = { pc, dc };
+
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            ws.send(JSON.stringify({
+                type: MESSAGE_TYPES.SIGNAL,
+                target: targetId,
+                signalType: 'candidate',
+                candidate: event.candidate
+            }));
+        }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({
+        type: MESSAGE_TYPES.SIGNAL,
+        target: targetId,
+        signalType: 'offer',
+        sdp: pc.localDescription
+    }));
+}
+
+async function handleSignal(data) {
+    const { senderId, signalType, sdp, candidate } = data;
+    
+    let pc;
+    if (peerConnections[senderId]) {
+        pc = peerConnections[senderId].pc;
+    } else {
+        if (signalType === 'offer') {
+            pc = new RTCPeerConnection(iceConfig);
+            peerConnections[senderId] = { pc, dc: null };
+            
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({
+                        type: MESSAGE_TYPES.SIGNAL,
+                        target: senderId,
+                        signalType: 'candidate',
+                        candidate: event.candidate
+                    }));
+                }
+            };
+
+            pc.ondatachannel = (event) => {
+                const dc = event.channel;
+                peerConnections[senderId].dc = dc;
+                setupDataChannel(dc, senderId);
+            };
+        } else {
+            return;
+        }
+    }
+
+    if (signalType === 'offer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({
+            type: MESSAGE_TYPES.SIGNAL,
+            target: senderId,
+            signalType: 'answer',
+            sdp: pc.localDescription
+        }));
+    } else if (signalType === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    } else if (signalType === 'candidate') {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+}
+
+function setupDataChannel(dc, remoteUserId) {
+    dc.onopen = () => console.log(`Data channel open with ${remoteUserId}`);
+    dc.onmessage = (event) => {
+        handleDataMessage(JSON.parse(event.data));
+    };
+}
+
+async function handleDataMessage(data) {
+    if (data.type === MESSAGE_TYPES.CLIPBOARD) {
+        const decryptedContent = decrypt(data.content);
+        const decryptedFileName = data.fileName ? decrypt(data.fileName) : null;
+
+        if (decryptedContent && decryptedContent !== lastClip) {
+            console.log(`Received clipboard (${data.type}) from ${data.senderId}`);
+
+            if (data.clipboardType === CLIPBOARD_TYPES.FILE || data.clipboardType === CLIPBOARD_TYPES.IMAGE) {
+                const downloadDir = path.join(__dirname, 'downloads');
+                if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
+                const fileName = decryptedFileName || `file-${Date.now()}`;
+                const filePath = path.join(downloadDir, fileName);
+                fs.writeFileSync(filePath, Buffer.from(decryptedContent, 'base64'));
+                console.log(`Saved ${data.clipboardType} to ${filePath}`);
+            } else {
+                lastClip = decryptedContent;
+                await clipboardy.write(decryptedContent);
+            }
+
+            history.unshift({
+                type: data.clipboardType || 'text',
+                content: data.clipboardType === CLIPBOARD_TYPES.TEXT ? decryptedContent : `File: ${decryptedFileName}`,
+                senderId: data.senderId,
+                timestamp: Date.now()
+            });
+            if (history.length > 20) history.pop();
+        }
+    } else if (data.type === MESSAGE_TYPES.FILE_TRANSFER) {
+        const { action, transferId } = data;
+        if (action === TRANSFER_ACTIONS.START) {
+            const fileName = decrypt(data.fileName);
+            const downloadDir = path.join(__dirname, 'downloads');
+            if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
+            const safeFileName = `${Date.now()}-${path.basename(fileName)}`;
+            const filePath = path.join(downloadDir, safeFileName);
+            const writeStream = fs.createWriteStream(filePath);
+            incomingTransfers.set(transferId, { writeStream, fileName, senderId: data.senderId });
+            console.log(`Starting download: ${fileName}`);
+        } else if (action === TRANSFER_ACTIONS.CHUNK) {
+            const transfer = incomingTransfers.get(transferId);
+            if (transfer) {
+                const chunk = Buffer.from(decrypt(data.content), 'base64');
+                transfer.writeStream.write(chunk);
+            }
+        } else if (action === TRANSFER_ACTIONS.END) {
+            const transfer = incomingTransfers.get(transferId);
+            if (transfer) {
+                transfer.writeStream.end();
+                console.log(`Finished download: ${transfer.fileName}`);
+                history.unshift({
+                    type: CLIPBOARD_TYPES.FILE,
+                    content: `File received: ${transfer.fileName}`,
+                    senderId: transfer.senderId,
+                    timestamp: Date.now()
+                });
+                incomingTransfers.delete(transferId);
+            }
+        }
+    }
+}
+
 function sendFile(filePath) {
     try {
         const transferId = crypto.randomUUID();
@@ -214,25 +311,25 @@ function sendFile(filePath) {
         
         console.log(`Sending file: ${fileName} (${stats.size} bytes)`);
 
-        ws.send(JSON.stringify({
+        const startMsg = JSON.stringify({
             type: MESSAGE_TYPES.FILE_TRANSFER,
             action: TRANSFER_ACTIONS.START,
             transferId,
             fileName: encrypt(fileName),
             senderId: USER_ID
-        }));
+        });
+        Object.values(peerConnections).forEach(({ dc }) => { if (dc && dc.readyState === 'open') dc.send(startMsg); });
 
         const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 }); // 64KB chunks
         
         stream.on('data', (chunk) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
+            const chunkMsg = JSON.stringify({
                     type: MESSAGE_TYPES.FILE_TRANSFER,
                     action: TRANSFER_ACTIONS.CHUNK,
                     transferId,
                     content: encrypt(chunk.toString('base64'))
-                }));
-            }
+            });
+            Object.values(peerConnections).forEach(({ dc }) => { if (dc && dc.readyState === 'open') dc.send(chunkMsg); });
         });
 
         stream.on('error', (err) => {
@@ -240,11 +337,12 @@ function sendFile(filePath) {
         });
 
         stream.on('end', () => {
-            ws.send(JSON.stringify({
+            const endMsg = JSON.stringify({
                 type: MESSAGE_TYPES.FILE_TRANSFER,
                 action: TRANSFER_ACTIONS.END,
                 transferId
-            }));
+            });
+            Object.values(peerConnections).forEach(({ dc }) => { if (dc && dc.readyState === 'open') dc.send(endMsg); });
             console.log('File sent successfully');
         });
     } catch (err) {
@@ -328,14 +426,15 @@ setInterval(async () => {
 }, 1000);
 
 function broadcastClipboard(content, type, fileName = null) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: MESSAGE_TYPES.CLIPBOARD,
-            clipboardType: type,
-            content: encrypt(content),
-            fileName: fileName ? encrypt(fileName) : null,
-            senderId: USER_ID,
-            timestamp: Date.now()
-        }));
-    }
+    const msg = JSON.stringify({
+        type: MESSAGE_TYPES.CLIPBOARD,
+        clipboardType: type,
+        content: encrypt(content),
+        fileName: fileName ? encrypt(fileName) : null,
+        senderId: USER_ID,
+        timestamp: Date.now()
+    });
+    Object.values(peerConnections).forEach(({ dc }) => {
+        if (dc && dc.readyState === 'open') dc.send(msg);
+    });
 }

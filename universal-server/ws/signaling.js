@@ -22,7 +22,7 @@ export function setupWebSocket(server) {
           ws.os = os;
 
           if (!rooms[roomId]) {
-            rooms[roomId] = { clients: new Set(), lastClipboard: null };
+            rooms[roomId] = { clients: new Set() };
           }
           rooms[roomId].clients.add(ws);
           console.log(`User ${userId} joined room ${roomId}`);
@@ -33,28 +33,18 @@ export function setupWebSocket(server) {
           
           ws.send(JSON.stringify({ type: 'existing-peers', peers }));
 
-          if (rooms[roomId].lastClipboard) {
-            ws.send(JSON.stringify({
-              type: 'clipboard',
-              ...rooms[roomId].lastClipboard
-            }));
-          }
-
           broadcastToRoom(roomId, { type: 'peer-joined', userId, os }, ws);
 
-        } else if (data.type === 'clipboard') {
-          if (currentRoom && rooms[currentRoom]) {
-            rooms[currentRoom].lastClipboard = {
-              content: data.content,
-              type: data.clipboardType,
-              timestamp: data.timestamp
-            };
-            broadcastToRoom(currentRoom, data, ws);
-          }
         } else if (data.type === 'signal') {
-          broadcastToRoom(currentRoom, data, ws);
-        } else if (data.type === 'file-transfer') {
-          broadcastToRoom(currentRoom, data, ws);
+          const payload = { ...data, senderId: currentUserId };
+          if (data.target) {
+            const targetWs = Array.from(rooms[currentRoom].clients).find(client => client.userId === data.target);
+            if (targetWs && targetWs.readyState === 1) {
+              targetWs.send(JSON.stringify(payload));
+            }
+          } else {
+            broadcastToRoom(currentRoom, payload, ws);
+          }
         }
       } catch (e) {
         console.error('Error processing message:', e);
@@ -66,6 +56,9 @@ export function setupWebSocket(server) {
       if (currentRoom && rooms[currentRoom]) {
         rooms[currentRoom].clients.delete(ws);
         broadcastToRoom(currentRoom, { type: 'peer-left', userId: currentUserId }, ws);
+        if (rooms[currentRoom].clients.size === 0) {
+          delete rooms[currentRoom];
+        }
       }
     });
   });
