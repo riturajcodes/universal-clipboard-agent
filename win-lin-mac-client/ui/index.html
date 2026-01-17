@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Universal Clipboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <h1>Universal Clipboard</h1>
+
+    <div id="loginScreen">
+        <label>Room ID</label>
+        <input type="text" id="roomId" placeholder="Enter or create room">
+        <button id="createBtn">Create New Room</button>
+        <button id="joinBtn">Join Room</button>
+    </div>
+
+    <div id="dashboardScreen" style="display: none;">
+        <h3 id="currentRoomDisplay"></h3>
+
+        <h2>Connected Devices</h2>
+        <ul id="devicesList"></ul>
+
+        <h2>Clipboard History</h2>
+        <ul id="clipboardHistory"></ul>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

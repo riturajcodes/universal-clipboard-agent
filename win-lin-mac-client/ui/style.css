@@ -1,0 +1,266 @@
+/* =====================================================
+   UNIVERSAL CLIPBOARD — STAR GAZING UI
+   Calm • Professional • Atmospheric
+===================================================== */
+
+:root {
+    --bg: #020308;
+    --panel: rgba(12, 14, 26, 0.88);
+    --panel-2: rgba(16, 18, 34, 0.92);
+    --border: rgba(255, 255, 255, 0.08);
+
+    --text-main: #f2f4ff;
+    --text-muted: #a3a9d9;
+    --accent: #7f8cff;
+
+    --radius: 14px;
+}
+
+/* =========================
+   RESET
+========================= */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont;
+}
+
+/* =========================
+   STAR-GAZING BACKGROUND
+========================= */
+body {
+    min-height: 100vh;
+    background:
+        /* Milky Way band */
+        radial-gradient(
+            1200px 320px at 50% 40%,
+            rgba(140, 150, 255, 0.12),
+            transparent 70%
+        ),
+        /* depth */
+        radial-gradient(
+            800px 500px at 20% 10%,
+            rgba(90, 100, 180, 0.10),
+            transparent 60%
+        ),
+        linear-gradient(
+            180deg,
+            #020308 0%,
+            #040515 50%,
+            #020308 100%
+        );
+    color: var(--text-main);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 72px 20px;
+    overflow-x: hidden;
+}
+
+/* =========================
+   STAR FIELD (STATIC)
+========================= */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(1px 1px at 8% 15%, #fff, transparent),
+        radial-gradient(1px 1px at 18% 55%, #fff, transparent),
+        radial-gradient(1px 1px at 32% 75%, #fff, transparent),
+        radial-gradient(1px 1px at 46% 28%, #fff, transparent),
+        radial-gradient(1px 1px at 58% 62%, #fff, transparent),
+        radial-gradient(1px 1px at 72% 40%, #fff, transparent),
+        radial-gradient(1px 1px at 86% 20%, #fff, transparent),
+        radial-gradient(1px 1px at 94% 68%, #fff, transparent);
+    background-size: 360px 360px;
+    opacity: 0.55;
+}
+
+/* =========================
+   FLOATING BUBBLES / PARTICLES
+========================= */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(circle 6px at 10% 110%, rgba(255,255,255,0.10), transparent 70%),
+        radial-gradient(circle 10px at 25% 120%, rgba(255,255,255,0.08), transparent 70%),
+        radial-gradient(circle 5px at 40% 130%, rgba(255,255,255,0.12), transparent 70%),
+        radial-gradient(circle 8px at 60% 115%, rgba(255,255,255,0.09), transparent 70%),
+        radial-gradient(circle 6px at 75% 125%, rgba(255,255,255,0.10), transparent 70%),
+        radial-gradient(circle 9px at 90% 118%, rgba(255,255,255,0.08), transparent 70%);
+    opacity: 0.35;
+    animation: bubblesFloat 180s linear infinite;
+}
+
+@keyframes bubblesFloat {
+    from { transform: translateY(0); }
+    to   { transform: translateY(-140vh); }
+}
+
+/* =========================
+   TITLE
+========================= */
+h1 {
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 42px;
+    text-align: center;
+}
+
+/* =========================
+   PANELS
+========================= */
+#loginScreen,
+#dashboardScreen {
+    width: 100%;
+    max-width: 440px;
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border-radius: var(--radius);
+    padding: 32px;
+    border: 1px solid var(--border);
+    backdrop-filter: blur(14px);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+#dashboardScreen {
+    max-width: 720px;
+}
+
+/* =========================
+   LOGIN FORM
+========================= */
+#loginScreen {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+#loginScreen label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* =========================
+   INPUT
+========================= */
+#roomId {
+    height: 46px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.45);
+    color: var(--text-main);
+    font-size: 14px;
+}
+
+#roomId::placeholder {
+    color: #6f74a8;
+}
+
+#roomId:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* =========================
+   BUTTONS
+========================= */
+button {
+    height: 44px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-main);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.08s ease;
+}
+
+button:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+button:active {
+    transform: scale(0.97);
+}
+
+#createBtn {
+    background: linear-gradient(180deg, #7f8cff, #6b76e8);
+    border: none;
+}
+
+/* =========================
+   DASHBOARD CONTENT
+========================= */
+#currentRoomDisplay {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 28px;
+}
+
+#dashboardScreen h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 28px 0 12px;
+}
+
+/* =========================
+   LISTS
+========================= */
+#devicesList,
+#clipboardHistory {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#devicesList li,
+#clipboardHistory li {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    transition: background 0.12s ease;
+}
+
+#devicesList li:hover,
+#clipboardHistory li:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* =========================
+   RESPONSIVE
+========================= */
+@media (max-width: 640px) {
+    h1 {
+        font-size: 28px;
+        margin-bottom: 32px;
+    }
+
+    #loginScreen,
+    #dashboardScreen {
+        padding: 24px;
+    }
+}
+
+/* =========================
+   ACCESSIBILITY
+========================= */
+@media (prefers-reduced-motion: reduce) {
+    body::after {
+        animation: none;
+    }
+}

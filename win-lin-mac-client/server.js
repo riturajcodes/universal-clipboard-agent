@@ -1,0 +1,361 @@
+import express from 'express';
+import path from 'path';
+import http from 'http';
+import WebSocket from 'ws';
+import clipboardy from 'clipboardy';
+import fs from 'fs';
+import crypto from 'crypto';
+import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import {CLIPBOARD_TYPES, MESSAGE_TYPES, TRANSFER_ACTIONS} from './constants.js';
+
+const app = express();
+const PORT = 4000;
+app.use(express.json());
+
+// Fix __dirname for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const execAsync = promisify(exec);
+
+// Serve static UI files
+app.use(express.static(path.join(__dirname, 'ui')));
+
+// --- Local API for UI ---
+app.post('/api/join', (req, res) => {
+    const { roomId } = req.body;
+    if (roomId) {
+        ROOM_ID = roomId;
+        connect(); // Reconnect with new room
+        res.json({ success: true, roomId });
+    } else {
+        res.status(400).json({ error: 'Room ID required' });
+    }
+});
+
+app.get('/api/status', (req, res) => {
+    res.json({ 
+        roomId: ROOM_ID, 
+        connected: ws?.readyState === WebSocket.OPEN, 
+        peers: Array.from(peers),
+        history 
+    });
+});
+
+const server = http.createServer(app);
+server.listen(PORT, () => {
+    console.log(`Client UI running at http://localhost:${PORT}`);
+});
+
+// --- WebSocket to central server ---
+const SERVER_URL = 'ws://localhost:3000'; // Change if deployed
+let ROOM_ID = process.env.ROOM_ID || null;
+const USER_ID = `client-${Math.floor(Math.random() * 10000)}`;
+const OS = process.platform;
+
+let ws;
+let lastClip = '';
+let peers = new Set();
+let history = [];
+const incomingTransfers = new Map(); // transferId -> { writeStream, fileName, senderId }
+
+// --- Encryption Helpers ---
+const ALGORITHM = 'aes-256-gcm';
+const getKey = () => crypto.scryptSync(ROOM_ID || 'default-secret', 'salt', 32);
+
+function encrypt(text) {
+    const key = getKey();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return JSON.stringify({ iv: iv.toString('hex'), content: encrypted, tag: authTag });
+}
+
+function decrypt(encryptedWrapper) {
+    try {
+        const { iv, content, tag } = JSON.parse(encryptedWrapper);
+        const key = getKey();
+        const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(tag, 'hex'));
+        let decrypted = decipher.update(content, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        return null;
+    }
+}
+
+function connect() {
+    if (ws) {
+        ws.removeAllListeners();
+        ws.terminate();
+    }
+    ws = new WebSocket(SERVER_URL);
+
+    ws.on('open', () => {
+        console.log('Connected to central server');
+        ws.send(JSON.stringify({
+            type: MESSAGE_TYPES.JOIN,
+            roomId: ROOM_ID || 'default',
+            userId: USER_ID,
+            os: OS
+        }));
+        peers.clear();
+        history = [];
+    });
+
+    ws.on('message', async (msg) => {
+        try {
+            const data = JSON.parse(msg);
+
+            switch (data.type) {
+                case MESSAGE_TYPES.CLIPBOARD:
+                    // Received clipboard data from server/peer
+                    const decryptedContent = decrypt(data.content);
+                    const decryptedFileName = data.fileName ? decrypt(data.fileName) : null;
+
+                    if (decryptedContent && decryptedContent !== lastClip) {
+                        console.log(`Received clipboard (${data.type}) from ${data.senderId}`);
+
+                        if (data.clipboardType === CLIPBOARD_TYPES.FILE || data.clipboardType === CLIPBOARD_TYPES.IMAGE) {
+                            const downloadDir = path.join(__dirname, 'downloads');
+                            if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
+                            const fileName = decryptedFileName || `file-${Date.now()}`;
+                            const filePath = path.join(downloadDir, fileName);
+                            fs.writeFileSync(filePath, Buffer.from(decryptedContent, 'base64'));
+                            console.log(`Saved ${data.clipboardType} to ${filePath}`);
+                        } else {
+                            lastClip = decryptedContent;
+                            await clipboardy.write(decryptedContent);
+                        }
+
+                        history.unshift({
+                            type: data.clipboardType || 'text',
+                            content: data.clipboardType === CLIPBOARD_TYPES.TEXT ? decryptedContent : `File: ${decryptedFileName}`,
+                            senderId: data.senderId,
+                            timestamp: Date.now()
+                        });
+                        if (history.length > 20) history.pop();
+                    }
+                    break;
+
+                case MESSAGE_TYPES.PEER_JOINED:
+                    console.log('Peer joined:', data.userId);
+                    peers.add(`${data.userId} (${data.os || 'unknown'})`);
+                    break;
+
+                case MESSAGE_TYPES.PEER_LEFT:
+                    console.log('Peer left:', data.userId);
+                    // Simple removal based on partial match or rebuild logic needed for robust app
+                    // For now, we just re-sync or let the UI poll
+                    break;
+
+                case MESSAGE_TYPES.EXISTING_PEERS:
+                    data.peers.forEach(p => peers.add(`${p.userId} (${p.os})`));
+                    break;
+
+                case MESSAGE_TYPES.FILE_TRANSFER:
+                    const { action, transferId } = data;
+                    
+                    if (action === TRANSFER_ACTIONS.START) {
+                        const fileName = decrypt(data.fileName);
+                        const downloadDir = path.join(__dirname, 'downloads');
+                        if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir);
+                        
+                        // Handle duplicate names
+                        const safeFileName = `${Date.now()}-${path.basename(fileName)}`;
+                        const filePath = path.join(downloadDir, safeFileName);
+                        
+                        const writeStream = fs.createWriteStream(filePath);
+                        incomingTransfers.set(transferId, { writeStream, fileName, senderId: data.senderId });
+                        console.log(`Starting download: ${fileName}`);
+                    } 
+                    else if (action === TRANSFER_ACTIONS.CHUNK) {
+                        const transfer = incomingTransfers.get(transferId);
+                        if (transfer) {
+                            const chunk = Buffer.from(decrypt(data.content), 'base64');
+                            transfer.writeStream.write(chunk);
+                        }
+                    }
+                    else if (action === TRANSFER_ACTIONS.END) {
+                        const transfer = incomingTransfers.get(transferId);
+                        if (transfer) {
+                            transfer.writeStream.end();
+                            console.log(`Finished download: ${transfer.fileName}`);
+                            history.unshift({
+                                type: CLIPBOARD_TYPES.FILE,
+                                content: `File received: ${transfer.fileName}`,
+                                senderId: transfer.senderId,
+                                timestamp: Date.now()
+                            });
+                            incomingTransfers.delete(transferId);
+                        }
+                    }
+                    break;
+            }
+        } catch (err) {
+            console.error('Error handling message:', err);
+        }
+    });
+
+    ws.on('close', () => {
+        console.log('Disconnected. Reconnecting in 3s...');
+        setTimeout(connect, 3000);
+    });
+
+    ws.on('error', (err) => {
+        console.error('WebSocket error:', err.message);
+        ws.close();
+    });
+}
+
+// Start connection
+connect();
+
+function sendFile(filePath) {
+    try {
+        const transferId = crypto.randomUUID();
+        const fileName = path.basename(filePath);
+        const stats = fs.statSync(filePath);
+        
+        console.log(`Sending file: ${fileName} (${stats.size} bytes)`);
+
+        // 1. Send Start
+        ws.send(JSON.stringify({
+            type: MESSAGE_TYPES.FILE_TRANSFER,
+            action: TRANSFER_ACTIONS.START,
+            transferId,
+            fileName: encrypt(fileName),
+            senderId: USER_ID
+        }));
+
+        // 2. Stream Chunks
+        const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 }); // 64KB chunks
+        
+        stream.on('data', (chunk) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: MESSAGE_TYPES.FILE_TRANSFER,
+                    action: TRANSFER_ACTIONS.CHUNK,
+                    transferId,
+                    content: encrypt(chunk.toString('base64'))
+                }));
+            }
+        });
+
+        stream.on('error', (err) => {
+            console.error('Error reading file stream:', err);
+        });
+
+        stream.on('end', () => {
+            ws.send(JSON.stringify({
+                type: MESSAGE_TYPES.FILE_TRANSFER,
+                action: TRANSFER_ACTIONS.END,
+                transferId
+            }));
+            console.log('File sent successfully');
+        });
+    } catch (err) {
+        console.error('Error sending file:', err);
+    }
+}
+
+// --- Clipboard watcher ---
+setInterval(async () => {
+    try {
+        const text = await clipboardy.read();
+        if (text && text !== lastClip) {
+            lastClip = text;
+            const trimmedText = text.trim();
+            
+            let type = CLIPBOARD_TYPES.TEXT;
+            let content = text;
+            let fileName = null;
+            let isFile = false;
+
+            // Check if text is a file path safely
+            try {
+                // Avoid checking fs for long strings or multiline text which are likely not paths
+                if (trimmedText.length < 1024 && !trimmedText.includes('\n')) {
+                    if (fs.existsSync(trimmedText) && fs.lstatSync(trimmedText).isFile()) {
+                        isFile = true;
+                    }
+                }
+            } catch (e) {
+                // Ignore fs errors (e.g. invalid characters in clipboard text)
+            }
+
+            if (isFile) {
+                type = CLIPBOARD_TYPES.FILE;
+                fileName = path.basename(trimmedText);
+                // Simple check for images based on extension
+                if (/\.(png|jpg|jpeg|gif|bmp)$/i.test(fileName)) {
+                    type = CLIPBOARD_TYPES.IMAGE;
+                }
+                // Use chunked transfer for files
+                sendFile(trimmedText);
+            } else {
+                broadcastClipboard(content, type, fileName);
+            }
+
+            history.unshift({
+                type: type,
+                content: type === CLIPBOARD_TYPES.TEXT ? text : `File: ${fileName}`,
+                senderId: 'Me',
+                timestamp: Date.now()
+            });
+            if (history.length > 20) history.pop();
+        }
+    } catch (err) {
+        const msg = err.message || err.toString();
+        // On Wayland, wl-paste throws if content is not text (e.g. file)
+        if (msg.includes('wl-paste') && msg.includes('not available')) {
+            try {
+                // Try to read as file URI list (fallback for file transfer)
+                const { stdout } = await execAsync('wl-paste --type text/uri-list');
+                const uri = stdout.trim().split('\n')[0]; // Get first file
+                
+                if (uri && uri.startsWith('file://')) {
+                    const filePath = fileURLToPath(uri);
+                    
+                    if (filePath && filePath !== lastClip) {
+                        lastClip = filePath;
+                        
+                        if (fs.existsSync(filePath) && fs.lstatSync(filePath).isFile()) {
+                            sendFile(filePath);
+                            
+                            history.unshift({
+                                type: CLIPBOARD_TYPES.FILE,
+                                content: `File: ${path.basename(filePath)}`,
+                                senderId: 'Me',
+                                timestamp: Date.now()
+                            });
+                            if (history.length > 20) history.pop();
+                        }
+                    }
+                }
+            } catch (e) {
+                // Ignore if fallback also fails
+            }
+        } else {
+            console.error('Clipboard watcher error:', err);
+        }
+    }
+}, 1000);
+
+function broadcastClipboard(content, type, fileName = null) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: MESSAGE_TYPES.CLIPBOARD,
+            clipboardType: type,
+            content: encrypt(content),
+            fileName: fileName ? encrypt(fileName) : null,
+            senderId: USER_ID,
+            timestamp: Date.now()
+        }));
+    }
+}
