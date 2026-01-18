@@ -212,7 +212,6 @@ async function initiatePeerConnection(targetId) {
 
     const pc = new RTCPeerConnection(iceConfig);
 
-    // Deterministic role assignment
     politePeer[targetId] = USER_ID < targetId;
 
     const dc = pc.createDataChannel("universal-clipboard");

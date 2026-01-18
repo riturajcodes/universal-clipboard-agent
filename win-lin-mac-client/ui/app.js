@@ -77,6 +77,19 @@ function addDevice(deviceName, os) {
 
 function addClipboardItem(type, content, senderId) {
     const li = document.createElement('li');
-    li.textContent = `[${type}] from ${senderId}: ${content}`;
+
+    const timestamp = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+
+    li.innerHTML = `
+    <span class="time">${time}</span>
+    <span class="type">[${type}]</span>
+    <span class="sender">from ${senderId}:</span>
+    <span class="content">${content}</span>
+`;
+
     clipboardHistory.appendChild(li);
 }
