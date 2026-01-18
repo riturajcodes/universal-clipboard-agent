@@ -5,7 +5,6 @@ import cors from 'cors';
 import http from 'http';
 import { setupWebSocket } from './ws/signaling.js';
 import roomsRoutes from './routes/rooms.js';
-import usersRoutes from './routes/users.js';
 
 const app = express();
 const PORT = 3000;
