@@ -7,6 +7,21 @@ const loginScreen = document.getElementById('loginScreen');
 const dashboardScreen = document.getElementById('dashboardScreen');
 const currentRoomDisplay = document.getElementById('currentRoomDisplay');
 
+// Inject QRCode library
+const qrScript = document.createElement('script');
+qrScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+document.head.appendChild(qrScript);
+
+// Auto-join if roomId is in URL
+window.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(window.location.search);
+    const rid = params.get('roomId');
+    if (rid) {
+        roomIdInput.value = rid;
+        joinBtn.click();
+    }
+});
+
 createBtn.addEventListener('click', () => {
     fetch('https://universal-clipboard-agent.onrender.com/api/rooms/create', { method: 'POST' })
         .then(res => res.json())
@@ -37,6 +52,52 @@ function showDashboard(roomId) {
     loginScreen.style.display = 'none';
     dashboardScreen.style.display = 'block';
     currentRoomDisplay.textContent = `Room: ${roomId}`;
+    
+    const qrBtn = document.createElement('button');
+    qrBtn.textContent = 'Generate QR';
+    qrBtn.style.float = 'right';
+    qrBtn.onclick = () => {
+        fetch('/api/local-ip')
+            .then(res => res.json())
+            .then(data => {
+                const url = `http://${data.ip}:${data.port}/?roomId=${roomId}`;
+                
+                const modal = document.createElement('div');
+                Object.assign(modal.style, {
+                    position: 'fixed', top: '0', left: '0', width: '100%', height: '100%',
+                    backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', 
+                    justifyContent: 'center', alignItems: 'center', zIndex: '1000'
+                });
+                
+                const content = document.createElement('div');
+                Object.assign(content.style, {
+                    backgroundColor: 'white', padding: '20px', borderRadius: '8px',
+                    textAlign: 'center', minWidth: '300px'
+                });
+                
+                const qrDiv = document.createElement('div');
+                qrDiv.style.display = 'flex';
+                qrDiv.style.justifyContent = 'center';
+                new QRCode(qrDiv, { text: url, width: 200, height: 200 });
+                
+                const linkText = document.createElement('p');
+                linkText.textContent = url;
+                linkText.style.marginTop = '15px';
+                linkText.style.wordBreak = 'break-all';
+
+                const closeBtn = document.createElement('button');
+                closeBtn.textContent = 'Close';
+                closeBtn.style.marginTop = '15px';
+                closeBtn.onclick = () => document.body.removeChild(modal);
+                
+                content.appendChild(qrDiv);
+                content.appendChild(linkText);
+                content.appendChild(closeBtn);
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+            });
+    };
+    currentRoomDisplay.appendChild(qrBtn);
     
     setInterval(pollStatus, 2000);
     pollStatus();

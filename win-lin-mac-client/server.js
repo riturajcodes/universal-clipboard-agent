@@ -28,6 +28,22 @@ const politePeer = {};
 const execAsync = promisify(exec);
 app.use(express.static(path.join(__dirname, 'ui')));
 
+function getLocalIp() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return 'localhost';
+}
+
+app.get('/api/local-ip', (req, res) => {
+    res.json({ ip: getLocalIp(), port: PORT });
+});
+
 app.post('/api/join', (req, res) => {
     const { roomId } = req.body;
     if (roomId) {
