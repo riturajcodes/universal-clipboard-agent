@@ -218,27 +218,3 @@ button:active {
         animation: none;
     }
 }
-
-#clipboardHistory .time {
-    color: #8b8b94;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    white-space: nowrap;
-}
-
-#clipboardHistory .type {
-    color: #7c7cff;
-    font-weight: 600;
-    font-size: 11px;
-}
-
-#clipboardHistory .sender {
-    color: #a1a1aa;
-    font-size: 12px;
-}
-
-#clipboardHistory .content {
-    color: #ffffff;
-    flex: 1;
-    word-break: break-word;
-}

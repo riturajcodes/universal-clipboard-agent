@@ -84,12 +84,6 @@ function addClipboardItem(type, content, senderId) {
         second: '2-digit'
     });
 
-    li.innerHTML = `
-    <span class="time">${time}</span>
-    <span class="type">[${type}]</span>
-    <span class="sender">from ${senderId}:</span>
-    <span class="content">${content}</span>
-`;
-
+    li.textContent = `[${timestamp}] [${type}] from ${senderId}: ${content}`;
     clipboardHistory.appendChild(li);
 }
