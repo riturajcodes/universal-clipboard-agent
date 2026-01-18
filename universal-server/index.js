@@ -14,7 +14,6 @@ app.use(cors());
 app.use(bodyParser.json());
 
 app.use('/api/rooms', roomsRoutes);
-app.use('/api/users', usersRoutes);
 
 const server = http.createServer(app);
 

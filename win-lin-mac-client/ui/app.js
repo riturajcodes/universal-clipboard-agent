@@ -8,7 +8,7 @@ const dashboardScreen = document.getElementById('dashboardScreen');
 const currentRoomDisplay = document.getElementById('currentRoomDisplay');
 
 createBtn.addEventListener('click', () => {
-    fetch('http://localhost:3000/api/rooms/create', { method: 'POST' })
+    fetch('https://universal-clipboard-agent.onrender.com/api/rooms/create', { method: 'POST' })
         .then(res => res.json())
         .then(data => {
             roomIdInput.value = data.roomId;
